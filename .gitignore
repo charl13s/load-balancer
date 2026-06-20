@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# OS
+Thumbs.db
+
+# Project-specific
+analysis/results/*.png
+analysis/results/*.csv
+!analysis/results/.gitkeep
+
+# Docker / logs
+*.log
