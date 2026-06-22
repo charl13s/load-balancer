@@ -33,11 +33,16 @@ DEFAULT_N = int(os.environ.get("DEFAULT_N", "3"))
 SLOTS = int(os.environ.get("SLOTS", "512"))
 VIRTUALS = int(os.environ.get("VIRTUALS", "9"))
 
+
+HEARTBEAT_INTERVAL = float(os.environ.get("HEARTBEAT_INTERVAL", "5"))
+HEARTBEAT_TIMEOUT = float(os.environ.get("HEARTBEAT_TIMEOUT", "2"))
+
 # --- State protected by state_lock ---
 ring = ConsistentHash(slots=SLOTS, virtuals=VIRTUALS)
 state_lock = threading.Lock()
 name_to_id: dict[str, int] = {}      # hostname -> server_id (bridge to the ring)
 _next_server_id: int = 1             # monotonic counter; only allocate, never reuse
+_heartbeat_stop = threading.Event()   # set this to signal the heartbeat thread to exit
 
 
 def _allocate_server_id() -> int:
@@ -66,7 +71,56 @@ def _bootstrap_initial_servers() -> None:
                 name_to_id[name] = sid
                 ring.add_server(sid)
 
+def _replace_dead_server(name: str, sid: int) -> None:
+    """Remove a dead server and spawn a replacement under the same lock."""
+    with state_lock:
+        # Defensive: only act if the state still matches what the heartbeat saw.
+        # Could've been removed by /rm between snapshot and now.
+        if name_to_id.get(name) != sid:
+            return
+        name_to_id.pop(name)
+        ring.remove_server(sid)
+        kill_server(name)  # idempotent cleanup of any zombie container
 
+        new_name = _random_hostname()
+        new_sid = _allocate_server_id()
+        if spawn_server(new_name, new_sid):
+            name_to_id[new_name] = new_sid
+            ring.add_server(new_sid)
+            app.logger.info(
+                "heartbeat: replaced %s(id=%d) -> %s(id=%d)",
+                name, sid, new_name, new_sid,
+            )
+        else:
+            app.logger.warning("heartbeat: spawn replacement failed for %s", name)
+
+
+def _heartbeat_loop() -> None:
+    """Background thread: poll each managed server, replace dead ones.
+
+    Pattern: snapshot under lock -> check outside lock -> mutate under lock.
+    This keeps /add and /rm responsive even when servers are slow to respond.
+    """
+    app.logger.info("heartbeat: started (interval=%.1fs)", HEARTBEAT_INTERVAL)
+    while not _heartbeat_stop.is_set():
+        try:
+            with state_lock:
+                snapshot = list(name_to_id.items())  # [(name, sid), ...]
+
+            dead = [
+                (name, sid) for name, sid in snapshot
+                if not is_alive(name, timeout=HEARTBEAT_TIMEOUT)
+            ]
+
+            for name, sid in dead:
+                _replace_dead_server(name, sid)
+        except Exception:
+            app.logger.exception("heartbeat: unexpected error")
+
+        # Sleep, but wake immediately if shutdown is signaled.
+        _heartbeat_stop.wait(HEARTBEAT_INTERVAL)
+
+    app.logger.info("heartbeat: stopped")
 # =============================================================================
 # Routes
 # =============================================================================
@@ -193,6 +247,15 @@ def proxy(p):
 
 if __name__ == "__main__":
     _bootstrap_initial_servers()
-    # threaded=True so multiple requests can be served concurrently
-    # (we test this in 3a-3 with the async client).
-    app.run(host="0.0.0.0", port=5000, threaded=True)
+
+    # Heartbeat must start AFTER bootstrap so it doesn't see an empty ring.
+    # daemon=True means the thread dies with the main process on Ctrl+C.
+    heartbeat_thread = threading.Thread(
+        target=_heartbeat_loop, name="heartbeat", daemon=True,
+    )
+    heartbeat_thread.start()
+
+    try:
+        app.run(host="0.0.0.0", port=5000, threaded=True)
+    finally:
+        _heartbeat_stop.set()
