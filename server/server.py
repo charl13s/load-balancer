@@ -1,9 +1,15 @@
 """
 Minimal Flask web server for Task 1.
 
-See docs/TEAM.md section 4 Part 1 (Person C) for specification.
+Endpoints (both port 5000):
+    GET /home       JSON {"message": "Hello from Server: <ID>", "status": "successful"}
+    GET /heartbeat  empty body, HTTP 200 (used by LB to detect failures)
+
+SERVER_ID is read from the environment variable so a single image can run
+as multiple distinct containers via `docker run -e SERVER_ID=N ...`.
 """
 import os
+
 from flask import Flask, jsonify
 
 app = Flask(__name__)
@@ -13,17 +19,16 @@ SERVER_ID = os.environ.get("SERVER_ID", "unknown")
 
 @app.route("/home", methods=["GET"])
 def home():
-    # TODO Person C: return JSON
-    #   {"message": "Hello from Server: <ID>", "status": "successful"}
-    # with HTTP 200, where <ID> is SERVER_ID.
-    raise NotImplementedError("Person C: implement /home")
+    return jsonify({
+        "message": f"Hello from Server: {SERVER_ID}",
+        "status": "successful",
+    }), 200
 
 
 @app.route("/heartbeat", methods=["GET"])
 def heartbeat():
-    # TODO Person C: return empty body with HTTP 200.
-    # Hint: ("", 200)
-    raise NotImplementedError("Person C: implement /heartbeat")
+    # Empty body with HTTP 200, per spec.
+    return ("", 200)
 
 
 if __name__ == "__main__":
