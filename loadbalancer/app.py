@@ -11,10 +11,18 @@ Note on hostnames:
     names cannot contain spaces. We use "Server-1" instead. This is documented
     in the final README under Assumptions.
 """
+import logging
 import os
 import random
 import string
 import threading
+
+from flask import Flask, jsonify, request
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 from flask import Flask, jsonify, request
 
